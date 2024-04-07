@@ -15,67 +15,66 @@
   outputs = { self, nixpkgs, flakebox, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        flakeboxLib = flakebox.lib.${system} { };
         pkgs = import nixpkgs { inherit system; };
+        lib = pkgs.lib;
+        flakeboxLib = flakebox.lib.${system} { };
 
-        cashu_rs_mint_dir = "/tmp/cashu-rs-mint";
-        bitcoin_dir = cashu_rs_mint_dir + "/bitcoin";
-        lightning_dir = cashu_rs_mint_dir + "/lighting";
-      in
-      {
-        devShells = flakeboxLib.mkShells {
-          buildInputs = [
-          pkgs.clightning
-          pkgs.bitcoind
-          ];
-        shellHook = ''
-
-        mkdir -p ${cashu_rs_mint_dir}
-        mkdir -p ${bitcoin_dir}
-        mkdir -p ${lightning_dir}
-
-        alias btc="bitcoin-cli -regtest -datadir=${bitcoin_dir}"
-        alias ln1="lightning-cli --lightning-dir=${lightning_dir}/ln_1 --regtest"
-        alias ln2="lightning-cli --lightning-dir=${lightning_dir}/ln_2 --regtest"
-
-
-        blockcount=$(btc getblockcount) || { blockcount=-1; }
-        if [[ $blockcount == "-1" ]]; then
-          echo "Starting bitcoind"
-          bitcoind -regtest -datadir=${bitcoin_dir} -fallbackfee=0.01 -daemon
-          sleep 1
-        else
-           echo "bitcoind already started"
-        fi
-
-        btc loadwallet "test" || btc createwallet "test" || echo "Wallet already loaded"
-
-        address=`btc getnewaddress`
-        btc generatetoaddress 50 $address
-
-        ln_1_info=$(ln1 getinfo) || { ln_1_info=-1; }
-
-        if [[ $ln_1_info == "-1" ]]; then
-          echo "Starting ln1"
-          lightningd --bitcoin-datadir=${bitcoin_dir} --network=regtest --lightning-dir=${lightning_dir}/ln_1 --addr=127.0.0.1:19846 --autolisten=true --log-level=debug --log-file=./debug.log --daemon
-          sleep 1
-        else
-           echo "ln1 already started"
-        fi
-
-        ln_2_info=$(ln2 getinfo) || { ln_2_info=-1; }
-        if [[ $ln_2_info == "-1" ]]; then
-          echo "Starting ln2"
-          lightningd --bitcoin-datadir=${bitcoin_dir} --network=regtest --lightning-dir=${lightning_dir}/ln_2 --addr=127.0.0.1:80888 --autolisten=true --log-level=debug --log-file=./debug.log --daemon
-          sleep 1
-        else
-           echo "ln2 already started"
-        fi
-
-
-
-        '';
+        rustSrc = flakeboxLib.filterSubPaths {
+          root = builtins.path {
+            name = "cashu-rs-mint";
+            path = ./.;
+          };
+          paths = [ "Cargo.toml" "Cargo.lock" ".cargo" "src" ];
         };
 
+        targetsStd = flakeboxLib.mkStdTargets { };
+        toolchainsStd = flakeboxLib.mkStdToolchains { };
+        toolchainNative = flakeboxLib.mkFenixToolchain {
+          targets = (pkgs.lib.getAttrs [ "default" ] targetsStd);
+        };
+
+        commonArgs = {
+          buildInputs = [ pkgs.openssl ] ++ lib.optionals pkgs.stdenv.isDarwin
+            [ pkgs.darwin.apple_sdk.frameworks.SystemConfiguration ];
+          nativeBuildInputs = [ pkgs.pkg-config ];
+        };
+        outputs = (flakeboxLib.craneMultiBuild { toolchains = toolchainsStd; })
+          (craneLib':
+            let
+              craneLib = (craneLib'.overrideArgs {
+                pname = "flexbox-multibuild";
+                src = rustSrc;
+              }).overrideArgs commonArgs;
+            in rec {
+              workspaceDeps = craneLib.buildWorkspaceDepsOnly { };
+              workspaceBuild =
+                craneLib.buildWorkspace { cargoArtifacts = workspaceDeps; };
+              cashu-rs-mint = craneLib.buildPackageGroup {
+                pname = "cashu-rs-mint";
+                packages = [ "cashu-rs-mint" ];
+                mainProgram = "cashu-rs-mint";
+              };
+            });
+      in {
+        legacyPackages = outputs;
+        packages = { default = outputs.cashu-rs-mint; };
+        devShells = flakeboxLib.mkShells {
+          toolchain = toolchainNative;
+          packages = [ pkgs.clightning pkgs.bitcoind pkgs.just pkgs.mprocs ];
+          nativeBuildInputs = [ ];
+          shellHook = ''
+            export CASHU_RS_MINT_DIR=/tmp/cashu-rs-mint
+            export BITCOIN_DIR=$CASHU_RS_MINT_DIR/bitcoin
+            export LIGHTNING_DIR=$CASHU_RS_MINT_DIR/lighting
+            mkdir -p $CASHU_RS_MINT_DIR
+            mkdir -p $BITCOIN_DIR
+            mkdir -p $LIGHTNING_DIR
+            mkdir -p $LIGHTNING_DIR/ln_1
+            mkdir -p $LIGHTNING_DIR/ln_2
+            alias btc="bitcoin-cli -regtest -datadir=$BITCOIN_DIR"
+            alias ln1="lightning-cli --lightning-dir=$LIGHTNING_DIR/ln_1 --regtest"
+            alias ln2="lightning-cli --lightning-dir=$LIGHTNING_DIR/ln_2 --regtest"
+          '';
+        };
       });
 }

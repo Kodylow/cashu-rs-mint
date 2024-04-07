@@ -1,0 +1,13 @@
+procs:
+  user:
+    shell: bash --init-file scripts/mprocs_user_shell.sh
+    stop: SIGKILL
+  bitcoind:
+    shell: ./scripts/start_bitcoind.sh
+    stop: SIGTERM
+  ln_1:
+    shell: ./scripts/start_lightningd.sh ln_1 127.0.0.1:19846
+    stop: SIGTERM
+  ln_2:
+    shell: ./scripts/start_lightningd.sh ln_2 127.0.0.1:80888
+    stop: SIGTERM
